@@ -53,8 +53,8 @@ static char *def_nasm_path = "nasm";
 
 struct command_history_list_node
 {
-	struct doubly_linked_list_node *next;
-	struct doubly_linked_list_node *prev;
+	struct command_history_list_node *next;
+	struct command_history_list_node *prev;
 
 	char *command;
 };
@@ -88,7 +88,7 @@ typedef struct assembler_state astate;
 
 int new_command(astate *state)
 {
-	if(ch_init >= CHD)
+	if(state->ch_init >= CHD)
 	{
 		state->command_history_end->next = state->command_history;
 		state->command_history->prev = state->command_history_end;
@@ -98,7 +98,7 @@ int new_command(astate *state)
 		state->command_history_end->next = NULL;
 
 		state->cbuffer = state->command_history_end->command;
-		return ;
+		return 0;
 	}
 
 	cnode *new_node = malloc(sizeof(cnode) + state->cb_len);
@@ -120,19 +120,6 @@ int new_command(astate *state)
 	}
 	new_node->next = NULL;
 	state->cbuffer = state->command_history_end->command;
-	return 0;
-}
-
-int clear_command_history(astate *state)
-{
-	while(state->command_history)
-	{
-		int ret = remove_history_node(state, state->command_history);
-		if(ret)
-		{
-			return ret;
-		}
-	}
 	return 0;
 }
 
@@ -162,6 +149,18 @@ int remove_history_node(astate *state, cnode *node)
 	return 0;
 }
 
+int clear_command_history(astate *state)
+{
+	while(state->command_history)
+	{
+		int ret = remove_history_node(state, state->command_history);
+		if(ret)
+		{
+			return ret;
+		}
+	}
+	return 0;
+}
 
 struct parse_return_val
 {
