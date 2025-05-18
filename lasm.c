@@ -12,6 +12,8 @@
 
 #define CHD 0x64 // Command history depth
 
+#define ESC "\x1b["
+
 #define COL_RD "\x1b[31m"
 #define COL_GR "\x1b[32m"
 #define COL_MG "\x1b[35m"
@@ -30,18 +32,18 @@
 #define FM_DISA "\x1b[8m"
 #define FM_STRK "\x1b[9m"
 
-#define FATAL_ERR_MSG COL_RD FM_BLN1 FM_BOLD FM_INVR FM_UNLN "FATAL ERROR:" RESET " "
-#define WARN_MSG COL_MG FM_BOLD "WARNING:" RESET " "
+#define FM_RESET "\x1b[0m"
 
-#define RESET "\x1b[0m"
+#define FATAL_ERR_MSG COL_RD FM_BLN1 FM_BOLD FM_INVR FM_UNLN "FATAL ERROR:" FM_RESET " "
+#define WARN_MSG COL_MG FM_BOLD "WARNING:" FM_RESET " "
 
 /* Static information */
 
-static char *help_fmt = FM_BOLD "Line Assembler version %u.%u" RESET "\nA line by line assembler wrapper for the Netwide Assembler on linux\n\n\t" FM_BOLD "Usage" RESET ":\n\t\tlasm [options] output_file(Default: stdout)\n\n\t" FM_BOLD "Options" RESET ":\n\t\t-a : ASCII output(equivalent to #ASCII command)\n\t\t-c : Specify command buffer length(Default: %lu)\n\t\t-d : Architecture = x86-32(Default: x86-64)\n\t\t-i : Specify alternate input stream/file(Default: stdin)\n\t\t-l : Specify input buffer length(Default: %lu)\n\t\t-m : Multiline mode(equivalent to #MULTILINE command. Terminate block with #ASSEMBLE command)\n\t\t-p : Specify path of nasm, inclusive of the binary(Default: \'nasm\', left to the environment)\n\t\t-P : Specify a new prompt for interactive mode(Default: \'%s\')\n\t\t-q : Architecture = x86-64(Default)\n\t\t-t : Specify alternate temporary file to communicate with nasm(Default: ./.lasmtemp)\n\t\t\t" FM_UNLN "Due to how nasm functions, the path of the tempfile with \".o\" appended will be reserved and a buffer of the length of the {tempfile name} +2 will be allocated dynamically" RESET "\n\t\t-w : Architecture = x86-16(Default: x86-64)\n\t\t-h : Print this help\n\n\t" FM_BOLD "INTERACTIVE COMMANDS" RESET ":\n\t\t#ASCII : ASCII output(equivalent to -a flag)\n\t\t#ASSEMBLE : Assemble current buffer(for multiline mode)\n\t\t#MULTILINE : Multiline mode(equivalent to -m flag. Terminate block with #ASSEMBLE command)\n\t\t#EXIT : Exit program\n\n\t\tNote: " FM_UNLN "Commands are case insensitive and the lowest string that can identify a command unambigously will suffice\n\t\t\t#asc, #ass, #m and #e are thus valid" RESET "\n";
+static char *help_fmt = FM_BOLD "Line Assembler version %u.%u" FM_RESET "\nA line by line assembler wrapper for the Netwide Assembler on linux\n\n\t" FM_BOLD "Usage" FM_RESET ":\n\t\tlasm [options] output_file(Default: stdout)\n\n\t" FM_BOLD "Options" FM_RESET ":\n\t\t-a : ASCII output(equivalent to #ASCII command)\n\t\t-c : Specify command buffer length(Default: %lu)\n\t\t-d : Architecture = x86-32(Default: x86-64)\n\t\t-i : Specify alternate input stream/file(Default: stdin)\n\t\t-l : Specify input buffer length(Default: %lu)\n\t\t-m : Multiline mode(equivalent to #MULTILINE command. Terminate block with #ASSEMBLE command)\n\t\t-p : Specify path of nasm, inclusive of the binary(Default: \'nasm\', left to the environment)\n\t\t-P : Specify a new prompt for interactive mode(Default: \'%s\')\n\t\t-q : Architecture = x86-64(Default)\n\t\t-t : Specify alternate temporary file to communicate with nasm(Default: ./.lasmtemp)\n\t\t\t" FM_UNLN "Due to how nasm functions, the path of the tempfile with \".o\" appended will be reserved and a buffer of the length of the {tempfile name} +2 will be allocated dynamically" FM_RESET "\n\t\t-w : Architecture = x86-16(Default: x86-64)\n\t\t-h : Print this help\n\n\t" FM_BOLD "INTERACTIVE COMMANDS" FM_RESET ":\n\t\t#ASCII : ASCII output(equivalent to -a flag)\n\t\t#ASSEMBLE : Assemble current buffer(for multiline mode)\n\t\t#MULTILINE : Multiline mode(equivalent to -m flag. Terminate block with #ASSEMBLE command)\n\t\t#EXIT : Exit program\n\n\t\tNote: " FM_UNLN "Commands are case insensitive and the lowest string that can identify a command unambigously will suffice\n\t\t\t#asc, #ass, #m and #e are thus valid" FM_RESET "\n";
 static char *insuf_arg_fmt_s = WARN_MSG "%s not provided after %s flag, defaulting to %s\n";
 static char *insuf_arg_fmt_lu = WARN_MSG "%s not provided after %s flag, defaulting to %lu\n";
-static char *inv_int_fmt = WARN_MSG "Invalid integer input. Reason: " FM_UNLN "%s" RESET ". defaulting to %lu\n";
-static char *malloc_fail_fmt = FATAL_ERR_MSG "Memory allocation faliure on " FM_UNLN "%s" RESET "\nAttempted allocation size: %lu bytes\n";
+static char *inv_int_fmt = WARN_MSG "Invalid integer input. Reason: " FM_UNLN "%s" FM_RESET ". defaulting to %lu\n";
+static char *malloc_fail_fmt = FATAL_ERR_MSG "Memory allocation faliure on " FM_UNLN "%s" FM_RESET "\nAttempted allocation size: %lu bytes\n";
 
 static char *inv_int_reasons[2] = {"Invalid characters encountered", "Input too big"};
 
@@ -51,14 +53,15 @@ static char *def_nasm_path = "nasm";
 
 /* Structs */
 
-struct command_history_list_node
+struct input_history_list_node
 {
-	struct command_history_list_node *next;
-	struct command_history_list_node *prev;
+	struct input_history_list_node *next;
+	struct input_history_list_node *prev;
 
-	char *command;
+	size_t len;
+	char *inputbuffer;
 };
-typedef struct command_history_list_node cnode;
+typedef struct input_history_list_node cnode;
 
 struct assembler_state
 {
@@ -80,46 +83,48 @@ struct assembler_state
 	size_t cb_len;
 	size_t tempfile_n_len;
 
-	cnode *command_history;
-	cnode *command_history_end;
+	cnode *cur_node;
+	cnode *input_history;
+	cnode *input_history_end;
 	size_t ch_init;
 };
 typedef struct assembler_state astate;
 
-int new_command(astate *state)
+int new_input_history_node(astate *state)
 {
 	if(state->ch_init >= CHD)
 	{
-		state->command_history_end->next = state->command_history;
-		state->command_history->prev = state->command_history_end;
-		state->command_history_end = state->command_history;
-		state->command_history = state->command_history->next;
-		state->command_history->prev = NULL;
-		state->command_history_end->next = NULL;
+		state->input_history_end->next = state->input_history;
+		state->input_history->prev = state->input_history_end;
+		state->input_history_end = state->input_history;
+		state->input_history = state->input_history->next;
+		state->input_history->prev = NULL;
+		state->input_history_end->next = NULL;
 
-		state->cbuffer = state->command_history_end->command;
+		state->cur_node = state->input_history_end;
 		return 0;
 	}
 
-	cnode *new_node = malloc(sizeof(cnode) + state->cb_len);
+	cnode *new_node = malloc(sizeof(cnode) + state->ib_len);
 	if(!new_node)
 	{
-		return -1;
+		fprintf(stderr, malloc_fail_fmt, "Input History Node Creation", sizeof(cnode) + state->cb_len);
+		exit(0x4);
 	}
 
-	new_node->command = (char *)((char *)new_node + sizeof(cnode));
+	new_node->inputbuffer = (char *)((char *)new_node + sizeof(cnode));
 
-	new_node->prev = state->command_history_end;
-	if(state->command_history_end)
+	new_node->prev = state->input_history_end;
+	if(state->input_history_end)
 	{
-		state->command_history_end->next = new_node;
+		state->input_history_end->next = new_node;
 	}
 	else
 	{
-		state->command_history = state->command_history_end = new_node;
+		state->input_history = state->input_history_end = new_node;
 	}
 	new_node->next = NULL;
-	state->cbuffer = state->command_history_end->command;
+	state->cur_node = state->input_history_end;
 	return 0;
 }
 
@@ -137,27 +142,51 @@ int remove_history_node(astate *state, cnode *node)
 	{
 		node->next->prev = node->prev;
 	}
-	if(node == state->command_history)
+	if(node == state->input_history)
 	{
-		state->command_history = node->next;
+		state->input_history = node->next;
 	}
-	if(node == state->command_history_end)
+	if(node == state->input_history_end)
 	{
-		state->command_history_end = node->prev;
+		state->input_history_end = node->prev;
 	}
 	free(node);
 	return 0;
 }
 
-int clear_command_history(astate *state)
+int clear_input_history(astate *state)
 {
-	while(state->command_history)
+	while(state->input_history)
 	{
-		int ret = remove_history_node(state, state->command_history);
+		int ret = remove_history_node(state, state->input_history);
 		if(ret)
 		{
 			return ret;
 		}
+	}
+	return 0;
+}
+
+int seek_input_history(astate *state, int offset)
+{
+	if(!(state->cur_node))
+	{
+		state->cur_node = state->input_history_end;
+		if(!(state->cur_node))
+		{
+			fprintf(stderr, FATAL_ERR_MSG "Command history not initialized");
+		}
+	}
+	int dec = (offset < 0)? 1: -1;
+	while(offset)
+	{
+		cnode *next = (dec==1) ? state->cur_node->prev : state->cur_node->next;
+		if(next == NULL)
+		{
+			fprintf(stdout, "\a");
+			break;
+		}
+		offset += dec;
 	}
 	return 0;
 }
@@ -167,7 +196,6 @@ struct parse_return_val
 	int error;
 	size_t adv;
 };
-
 typedef struct parse_return_val prv;
 
 struct parse_graph_node
@@ -177,7 +205,6 @@ struct parse_graph_node
 	size_t children_count;
 	struct parse_graph_node *children;
 };
-
 typedef struct parse_graph_node pgn;
 
 /* Program */
@@ -192,7 +219,7 @@ size_t strlen(char *str)
 int assemble(struct assembler_state *state) // Temporary while I figure out how to make more robust solutions portable between linux and windows, hopefully also eliminating the need of a tempfile with it.
 {
 	size_t command_len = snprintf(state->cbuffer, state->cb_len, "%s --before \'BITS %u\' %s -o %s", state->nasm_path, state->arch, state->tempfile_n, state->altfile_n_buffer);
-	//DEBUG_DELIM fprintf(stdout, "Command: " FM_BOLD "%s" RESET "\n", state->cbuffer);
+	//DEBUG_DELIM fprintf(stdout, "Command: " FM_BOLD "%s" FM_RESET "\n", state->cbuffer);
 	int retval = system(state->cbuffer);
 	if(retval)
 	{
@@ -246,8 +273,28 @@ int write_to_ofile(struct assembler_state *state)
 	return 0;
 }
 
-size_t fill_ibuffer(char *ibuffer, size_t ib_len, FILE *ifile, astate *state)
+int read_num(FILE *ifile, int *retr)
 {
+	int read_char = 0;
+	int argnum = 0;
+	while(1)
+	{
+		read_char = fgetc(ifile);
+		if(read_char < '0' || read_char > '9')
+		{
+			break;
+		}
+		argnum = argnum * 10 + (read_char & 0xF);
+	}
+	*retr = read_char;
+	return argnum;
+}
+
+size_t fill_ibuffer(size_t ib_len, FILE *ifile, astate *state)
+{
+	char *ibuffer = state->cur_node->inputbuffer;
+	size_t *len = &(state->cur_node->len);
+	*len = 0;
 	char *itr = ibuffer;
 	int read_char = 0;
 	while(itr-ibuffer < ib_len - 1)
@@ -256,13 +303,58 @@ size_t fill_ibuffer(char *ibuffer, size_t ib_len, FILE *ifile, astate *state)
 		switch(read_char)
 		{
 			case EOF:
+				end_of_file:
 				state->mgmt_flags |= 0x10;
+				return itr - ibuffer;
+			case '\x1b':
+				unsigned char esc_flags = 0;
+				int argnum = 0;
+				while(1)
+				{
+					read_char = fgetc(ifile);
+					if(read_char == '[')
+					{
+						argnum = read_num(ifile, &read_char);
+						esc_flags = 0x1;
+					}
+					if(read_char == EOF)
+					{
+						goto end_of_file;
+					}
+					if(esc_flags & 0x1)
+					{
+						esc_flags = 0;
+						if(read_char == ';')
+						{
+							continue;
+						}
+						switch(read_char)
+						{
+							case 'A':
+								seek_input_history(state, argnum);
+								break;
+							case 'B':
+								seek_input_history(state, -argnum);
+								break;
+						}
+						ibuffer = state->cur_node->inputbuffer;
+						len = &(state->cur_node->len);
+						*len = ((*len < ib_len)? *len : ib_len);
+						itr = ibuffer + *len;
+						*itr = '\0';
+						fprintf(stdout, "\r%s%s", state->prompt, ibuffer);
+						break;
+					}
+				}
+				break;
 			case '\n':
 				*itr = 0;
 				return itr - ibuffer;
 			default:
 				*itr = (char)read_char;
+				break;
 		}
+		(*len)++;
 		itr++;
 	}
 	*itr = 0;
@@ -276,7 +368,7 @@ void close_tempfile(astate *state)
 	if(fclose(state->tempfile))
 	{
 		fprintf(stderr, WARN_MSG "Failed to close temp file.\n Retry?(y/n): ");
-		fill_ibuffer(state->ibuffer, 2, stdin, state);
+		fill_ibuffer(2, stdin, state);
 		if(state->ibuffer[0] == 'y' | state->ibuffer[0] == 'Y')
 		{
 			goto tempfile_close_retry;
@@ -404,7 +496,7 @@ prv parse_command(char *iitr, char *citr, pgn *node, astate *state)
 
 prv parse_command_ascii(char *iitr, char *citr, pgn *node, astate *state) // Half assed, yeah I know.
 {
-	//DEBUG_DELIM fprintf(stdout, COL_GR "#ASCII command parsed\n" RESET);
+	//DEBUG_DELIM fprintf(stdout, COL_GR "#ASCII command parsed\n" FM_RESET);
 	state->mode ^= 0x1;
 
 	char *temp = iitr;
@@ -417,7 +509,7 @@ prv parse_command_ascii(char *iitr, char *citr, pgn *node, astate *state) // Hal
 
 prv parse_command_assemble(char *iitr, char *citr, pgn *node, astate *state)
 {
-	//DEBUG_DELIM fprintf(stdout, COL_GR "#ASSEMBLE command parsed\n" RESET);
+	//DEBUG_DELIM fprintf(stdout, COL_GR "#ASSEMBLE command parsed\n" FM_RESET);
 	full_assemble(state);
 
 	char *temp = iitr;
@@ -430,7 +522,7 @@ prv parse_command_assemble(char *iitr, char *citr, pgn *node, astate *state)
 
 prv parse_command_exit(char *iitr, char *citr, pgn *node, astate *state)
 {
-	//DEBUG_DELIM fprintf(stdout, COL_GR "#EXIT command parsed\n" RESET);
+	//DEBUG_DELIM fprintf(stdout, COL_GR "#EXIT command parsed\n" FM_RESET);
 	if(state->mode & 0x2)
 	{
 		full_assemble(state);
@@ -441,7 +533,7 @@ prv parse_command_exit(char *iitr, char *citr, pgn *node, astate *state)
 
 prv parse_command_multiline(char *iitr, char *citr, pgn *node, astate *state)
 {
-	//DEBUG_DELIM fprintf(stdout, COL_GR "#MULTILINE command parsed\n" RESET);
+	//DEBUG_DELIM fprintf(stdout, COL_GR "#MULTILINE command parsed\n" FM_RESET);
 	state->mode ^= 0x2;
 
 	char *temp = iitr;
@@ -488,6 +580,7 @@ int main(size_t nargs, char **args)
 	state.ifile_n = NULL;
 	state.nasm_path = def_nasm_path;
 	state.prompt = def_prompt;
+	state.input_history = state.input_history_end = state.cur_node = NULL;
 
 	/*
 		0x1: Alternate output specified
@@ -508,7 +601,6 @@ int main(size_t nargs, char **args)
 	state.cb_len = CBL;
 
 	state.ibuffer = NULL;
-	state.cbuffer = NULL;
 
 	size_t argcnt = nargs;
 	argcnt--;
@@ -720,13 +812,6 @@ int main(size_t nargs, char **args)
 	state.altfile_n_buffer[state.tempfile_n_len] = 'o';
 	state.altfile_n_buffer[state.tempfile_n_len + 1] = '\0';
 
-	state.ibuffer = (char *)malloc(state.ib_len);
-	if(!(state.ibuffer))
-	{
-		fprintf(stderr, malloc_fail_fmt, "Input Buffer", state.ib_len);
-		exit(0x4);
-	}
-
 	state.cbuffer = (char *)malloc(state.cb_len);
 	if(!(state.cbuffer))
 	{
@@ -751,7 +836,10 @@ int main(size_t nargs, char **args)
 			}
 		}
 		fprintf(stdout, "\n%s", state.prompt);
-		fill_ibuffer(state.ibuffer, state.ib_len, state.ifile, &state);
+
+		new_input_history_node(&state);
+		fill_ibuffer(state.ib_len, state.ifile, &state);
+		state.ibuffer = state.cur_node->inputbuffer;
 
 		char *iitr = state.ibuffer;
 		char *citr = state.cbuffer;
@@ -773,7 +861,7 @@ int main(size_t nargs, char **args)
 						iitr++;
 						fprintf(stdout, WARN_MSG "Unrecogonized command.\nSupported commands are #ASCII, #ASSEMBLE(only in multiline mode), #EXIT and #MULTILINE\n");
 					}
-					state.mgmt_flags |= 0x4; 
+					state.mgmt_flags |= 0x4;
 					iitr += adv.adv;
 					goto processed_command;
 				}
